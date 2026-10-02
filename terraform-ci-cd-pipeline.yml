@@ -69,13 +69,6 @@ stages:
         command: 'validate'
         workingDirectory: '$(System.DefaultWorkingDirectory)/environment/lab'
 
-        backendServiceArm: 'Haque_svc'
-        backendAzureRmOverrideSubscriptionID: '5bb9039b-d249-41b0-9e79-a43690140d5a'
-        backendAzureRmResourceGroupName: 'rg-infy'
-        backendAzureRmStorageAccountName: 'infystorage99'
-        backendAzureRmContainerName: 'tfstate'
-        backendAzureRmKey: 'lab.tfstate'
-
 
 ####################################################################
 #                     2. PLAN
