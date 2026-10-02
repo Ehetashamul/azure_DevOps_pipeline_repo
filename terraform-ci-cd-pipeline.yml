@@ -1,0 +1,281 @@
+# ====================================================================
+# Terraform Azure DevOps CI/CD Pipeline
+#
+# Flow:
+#
+# Validate
+#    ↓
+# Plan
+#    ↓
+# Security & Quality Scan
+#    ├── TFLint
+#    ├── tfsec
+#    └── TruffleHog
+#    ↓
+# Manual Approval
+#    ↓
+# Apply
+#
+# Apply is restricted to the main branch.
+# Feature branches run Validate → Plan → Scan.
+#
+# Backend details and service connection need to update
+# ====================================================================
+
+
+
+pool:
+  name: Haque-Agents
+
+trigger:
+  branches:
+    include:
+      - main
+      - feature101/*
+
+
+stages:
+
+####################################################################
+#                     1. VALIDATE
+####################################################################
+
+- stage: Validate
+  displayName: "Terraform Validate"
+
+  jobs:
+  - job: Terraform_Validate
+
+    steps:
+
+    - task: TerraformTask@5
+      displayName: "Terraform Init"
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/lab'
+
+        backendServiceArm: 'Haque_svc'
+        backendAzureRmOverrideSubscriptionID: '5bb9039b-d249-41b0-9e79-a43690140d5a'
+        backendAzureRmResourceGroupName: 'rg-infy'
+        backendAzureRmStorageAccountName: 'infystorage99'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'lab.tfstate'
+
+    - task: TerraformTask@5
+      displayName: "Terraform Validate"
+      inputs:
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/lab'
+
+        backendServiceArm: 'Haque_svc'
+        backendAzureRmOverrideSubscriptionID: '5bb9039b-d249-41b0-9e79-a43690140d5a'
+        backendAzureRmResourceGroupName: 'rg-infy'
+        backendAzureRmStorageAccountName: 'infystorage99'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'lab.tfstate'
+
+
+####################################################################
+#                     2. PLAN
+####################################################################
+
+- stage: Plan
+  displayName: "Terraform Plan"
+  dependsOn: Validate
+  condition: succeeded()
+
+  jobs:
+  - job: Terraform_Plan
+
+    steps:
+
+    - task: TerraformTask@5
+      displayName: "Terraform Init"
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/lab'
+
+        backendServiceArm: 'Haque_svc'
+        backendAzureRmOverrideSubscriptionID: '5bb9039b-d249-41b0-9e79-a43690140d5a'
+        backendAzureRmResourceGroupName: 'rg-infy'
+        backendAzureRmStorageAccountName: 'infystorage99'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'lab.tfstate'
+
+    - task: TerraformTask@5
+      displayName: "Terraform Plan"
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/lab'
+
+        environmentServiceNameAzureRM: 'Haque_svc'
+        environmentAzureRmOverrideSubscriptionID: '5bb9039b-d249-41b0-9e79-a43690140d5a'
+
+
+####################################################################
+#                     3. SCAN
+####################################################################
+
+- stage: Scan
+  displayName: "Terraform Security & Quality Scan"
+  dependsOn: Plan
+  condition: succeeded()
+
+  jobs:
+  - job: Terraform_Scan
+    displayName: "TFLint + tfsec + TruffleHog"
+
+    steps:
+
+    ################################################################
+    # TOOL VERSION CHECK
+    ################################################################
+
+    - script: |
+        echo "======================================"
+        echo "Checking Tool Versions"
+        echo "======================================"
+
+        terraform version
+        tflint --version
+        tfsec --version
+        trufflehog --version
+
+      displayName: "Check Tool Versions"
+
+
+    ################################################################
+    # TFLINT
+    ################################################################
+
+    - script: |
+        cd "$(System.DefaultWorkingDirectory)/environment/lab"
+
+        echo "======================================"
+        echo "Running TFLint"
+        echo "======================================"
+
+        tflint --init
+        tflint
+
+      # Alternative:
+      # tflint --recursive --force
+      # --recursive → scans Terraform configurations recursively
+      # --force     → reports issues but returns exit code 0
+
+      displayName: "TFLint Scan"
+
+
+    ################################################################
+    # TFSEC
+    ################################################################
+
+    - script: |
+        cd "$(System.DefaultWorkingDirectory)/environment/lab"
+
+        echo "======================================"
+        echo "Running tfsec"
+        echo "======================================"
+
+        tfsec .
+
+      displayName: "tfsec Security Scan"
+
+
+    ################################################################
+    # TRUFFLEHOG
+    ################################################################
+
+    - script: |
+        echo "======================================"
+        echo "Running TruffleHog"
+        echo "======================================"
+
+        trufflehog filesystem "$(System.DefaultWorkingDirectory)" --results=verified,unknown
+
+      displayName: "TruffleHog Secret Scan"
+
+
+####################################################################
+#                     4. MANUAL APPROVAL
+####################################################################
+
+- stage: ManualApproval
+  displayName: "Manual Approval"
+  dependsOn: Scan
+
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+
+  jobs:
+
+  - job: Approval
+    displayName: "Approve Terraform Apply"
+
+    pool: server
+
+    steps:
+
+    - task: ManualValidation@1
+      displayName: "Manual Approval Before Terraform Apply"
+
+      timeoutInMinutes: 60
+
+      inputs:
+        notifyUsers: |
+          hehetashamul@gmail.com
+
+        instructions: |
+          Terraform Plan and all security scans have completed successfully.
+
+          Please review the Terraform Plan and Scan results.
+
+          Approve this step to continue with Terraform Apply.
+
+        onTimeout: 'reject'
+
+
+####################################################################
+#                     5. APPLY
+####################################################################
+
+- stage: Apply
+  displayName: "Terraform Apply"
+  dependsOn: ManualApproval
+
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+
+  jobs:
+
+  - job: Terraform_Apply
+
+    steps:
+
+    - task: TerraformTask@5
+      displayName: "Terraform Init"
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/lab'
+
+        backendServiceArm: 'Haque_svc'
+        backendAzureRmOverrideSubscriptionID: '5bb9039b-d249-41b0-9e79-a43690140d5a'
+        backendAzureRmResourceGroupName: 'rg-infy'
+        backendAzureRmStorageAccountName: 'infystorage99'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'lab.tfstate'
+
+    - task: TerraformTask@5
+      displayName: "Terraform Apply"
+      inputs:
+        provider: 'azurerm'
+        command: 'apply'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/lab'
+
+        commandOptions: '-auto-approve'
+
+        environmentServiceNameAzureRM: 'Haque_svc'
+        environmentAzureRmOverrideSubscriptionID: '5bb9039b-d249-41b0-9e79-a43690140d5a'
