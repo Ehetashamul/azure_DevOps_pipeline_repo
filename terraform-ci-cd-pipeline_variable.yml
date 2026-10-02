@@ -1,0 +1,288 @@
+# ====================================================================
+# Terraform Azure DevOps CI/CD Pipeline
+#
+# Flow:
+#
+# Validate
+#    ↓
+# Plan
+#    ↓
+# Security & Quality Scan
+#    ├── TFLint
+#    ├── tfsec
+#    └── TruffleHog
+#    ↓
+# Manual Approval
+#    ↓
+# Apply
+#
+# Apply is restricted to the main branch.
+# Feature branches run Validate → Plan → Scan.
+#
+# Backend details and service connection need to update
+# ====================================================================
+
+
+
+pool:
+  name: Haque-Agents
+
+trigger:
+  branches:
+    include:
+      - main
+      - feature101/*
+
+# ====================================================================
+#                     PIPELINE-LEVEL VARIABLES
+# ====================================================================
+
+variables:
+
+
+  WORKING_DIRECTORY: '$(System.DefaultWorkingDirectory)/environment/lab'
+  SERVICE_CONNECTION_NAME: 'Haque_svc'
+  AZURE_SUBSCRIPTION_ID: '5bb9039b-d249-41b0-9e79-a43690140d5a'
+  BACKEND_RESOURCE_GROUP_NAME: 'rg-infy'
+  BACKEND_STORAGE_ACCOUNT_NAME: 'infystorage99'
+  BACKEND_CONTAINER_NAME: 'tfstate'
+  BACKEND_TFSTATE_FILE_NAME: 'lab.tfstate'
+
+stages:
+
+####################################################################
+#                     1. VALIDATE
+####################################################################
+
+- stage: Validate
+  displayName: "Terraform Validate"
+
+  jobs:
+  - job: Terraform_Validate
+
+    steps:
+
+    - task: TerraformTask@5
+      displayName: "Terraform Init"
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(WORKING_DIRECTORY)'
+
+        backendServiceArm: '$(SERVICE_CONNECTION_NAME)'
+        backendAzureRmOverrideSubscriptionID: '$(AZURE_SUBSCRIPTION_ID)'
+        backendAzureRmResourceGroupName: '$(BACKEND_RESOURCE_GROUP_NAME)'
+        backendAzureRmStorageAccountName: '$(BACKEND_STORAGE_ACCOUNT_NAME)'
+        backendAzureRmContainerName: '$(BACKEND_CONTAINER_NAME)'
+        backendAzureRmKey: '$(BACKEND_TFSTATE_FILE_NAME)'
+
+    - task: TerraformTask@5
+      displayName: "Terraform Validate"
+      inputs:
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: '$(WORKING_DIRECTORY)'
+
+
+####################################################################
+#                     2. PLAN
+####################################################################
+
+- stage: Plan
+  displayName: "Terraform Plan"
+  dependsOn: Validate
+  condition: succeeded()
+
+  jobs:
+  - job: Terraform_Plan
+
+    steps:
+
+    - task: TerraformTask@5
+      displayName: "Terraform Init"
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(WORKING_DIRECTORY)'
+
+        backendServiceArm: '$(SERVICE_CONNECTION_NAME)'
+        backendAzureRmOverrideSubscriptionID: '$(AZURE_SUBSCRIPTION_ID)'
+        backendAzureRmResourceGroupName: '$(BACKEND_RESOURCE_GROUP_NAME)'
+        backendAzureRmStorageAccountName: '$(BACKEND_STORAGE_ACCOUNT_NAME)'
+        backendAzureRmContainerName: '$(BACKEND_CONTAINER_NAME)'
+        backendAzureRmKey: '$(BACKEND_TFSTATE_FILE_NAME)'
+
+    - task: TerraformTask@5
+      displayName: "Terraform Plan"
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(WORKING_DIRECTORY)'
+
+        environmentServiceNameAzureRM: '$(SERVICE_CONNECTION_NAME)'
+        environmentAzureRmOverrideSubscriptionID: '$(AZURE_SUBSCRIPTION_ID)'
+
+
+####################################################################
+#                     3. SCAN
+####################################################################
+
+- stage: Scan
+  displayName: "Terraform Security & Quality Scan"
+  dependsOn: Plan
+  condition: succeeded()
+
+  jobs:
+  - job: Terraform_Scan
+    displayName: "TFLint + tfsec + TruffleHog"
+
+    steps:
+
+    ################################################################
+    # TOOL VERSION CHECK
+    ################################################################
+
+    - script: |
+        echo "======================================"
+        echo "Checking Tool Versions"
+        echo "======================================"
+
+        terraform version
+        tflint --version
+        tfsec --version
+        trufflehog --version
+
+      displayName: "Check Tool Versions"
+
+
+    ################################################################
+    # TFLINT
+    ################################################################
+
+    - script: |
+        cd "$(WORKING_DIRECTORY)"
+
+        echo "======================================"
+        echo "Running TFLint"
+        echo "======================================"
+
+        tflint --init
+        tflint
+
+      # Alternative:
+      # tflint --recursive --force
+      # --recursive → scans Terraform configurations recursively
+      # --force     → reports issues but returns exit code 0
+
+      displayName: "TFLint Scan"
+
+
+    ################################################################
+    # TFSEC
+    ################################################################
+
+    - script: |
+        cd "$(WORKING_DIRECTORY)"
+
+        echo "======================================"
+        echo "Running tfsec"
+        echo "======================================"
+
+        tfsec .
+
+      displayName: "tfsec Security Scan"
+
+
+    ################################################################
+    # TRUFFLEHOG
+    ################################################################
+
+    - script: |
+        echo "======================================"
+        echo "Running TruffleHog"
+        echo "======================================"
+
+        trufflehog filesystem "$(WORKING_DIRECTORY)" --results=verified,unknown
+
+      displayName: "TruffleHog Secret Scan"
+
+
+####################################################################
+#                     4. MANUAL APPROVAL
+####################################################################
+
+- stage: ManualApproval
+  displayName: "Manual Approval"
+  dependsOn: Scan
+
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+
+  jobs:
+
+  - job: Approval
+    displayName: "Approve Terraform Apply"
+
+    pool: server
+
+    steps:
+
+    - task: ManualValidation@1
+      displayName: "Manual Approval Before Terraform Apply"
+
+      timeoutInMinutes: 60
+
+      inputs:
+        notifyUsers: |
+          hehetashamul@gmail.com
+
+        instructions: |
+          Terraform Plan and all security scans have completed successfully.
+
+          Please review the Terraform Plan and Scan results.
+
+          Approve this step to continue with Terraform Apply.
+
+        onTimeout: 'reject'
+
+
+####################################################################
+#                     5. APPLY
+####################################################################
+
+- stage: Apply
+  displayName: "Terraform Apply"
+  dependsOn: ManualApproval
+
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+
+  jobs:
+
+  - job: Terraform_Apply
+
+    steps:
+
+    - task: TerraformTask@5
+      displayName: "Terraform Init"
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(WORKING_DIRECTORY)'
+
+        backendServiceArm: '$(SERVICE_CONNECTION_NAME)'
+        backendAzureRmOverrideSubscriptionID: '$(AZURE_SUBSCRIPTION_ID)'
+        backendAzureRmResourceGroupName: '$(BACKEND_RESOURCE_GROUP_NAME)'
+        backendAzureRmStorageAccountName: '$(BACKEND_STORAGE_ACCOUNT_NAME)'
+        backendAzureRmContainerName: '$(BACKEND_CONTAINER_NAME)'
+        backendAzureRmKey: '$(BACKEND_TFSTATE_FILE_NAME)'
+
+    - task: TerraformTask@5
+      displayName: "Terraform Apply"
+      inputs:
+        provider: 'azurerm'
+        command: 'apply'
+        workingDirectory: '$(WORKING_DIRECTORY)'
+
+        commandOptions: '-auto-approve'
+
+        environmentServiceNameAzureRM: '$(SERVICE_CONNECTION_NAME)'
+        environmentAzureRmOverrideSubscriptionID: '$(AZURE_SUBSCRIPTION_ID)'
