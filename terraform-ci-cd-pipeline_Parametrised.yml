@@ -3,28 +3,38 @@
 #
 # Flow:
 #
-# TFLint
-#    ↓
-# tfsec
-#    ↓
-# TruffleHog
-#    ↓
-# Validate
-#    ↓
-# Plan
-#    ↓
-# Manual Approval
-#    ↓
-# Apply
+#                 ┌── TFLint ──────────┐
+#                 │                    │
+#                 ├── tfsec ───────────┤
+#                 │                    │
+#                 ├── TruffleHog ──────┤
+#                 │                    │
+#                 └── Validate ────────┘
+#                          ↓
+#                         Plan
+#                          ↓
+#                   Manual Approval
+#                          ↓
+#                         Apply
 #
-# Apply is restricted to the main branch.
+# TFLint, tfsec, TruffleHog and Validate run independently
+# and can execute in parallel.
+#
+# Plan starts after all four stages complete successfully.
 #
 # Feature branches:
-# TFLint → tfsec → TruffleHog → Validate → Plan
+# TFLint ────────┐
+# tfsec ─────────┤
+# TruffleHog ────┼──→ Plan
+# Validate ──────┘
 #
 # Main branch:
-# TFLint → tfsec → TruffleHog → Validate → Plan
-# → Manual Approval → Apply
+# TFLint ────────┐
+# tfsec ─────────┤
+# TruffleHog ────┼──→ Plan → Manual Approval → Apply
+# Validate ──────┘
+#
+# Apply is restricted to the main branch.
 #
 # ====================================================================
 
