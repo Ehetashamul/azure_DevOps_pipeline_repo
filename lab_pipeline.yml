@@ -1,0 +1,451 @@
+# ====================================================================
+# Terraform Azure DevOps CI/CD Pipeline
+#
+# Flow:
+#
+#                 ┌── TFLint ──────────┐
+#                 │                    │
+#                 ├── tfsec ───────────┤
+#                 │                    │
+#                 ├── TruffleHog ──────┤
+#                 │                    │
+#                 └── Validate ────────┘
+#                          ↓
+#                         Plan
+#                          ↓
+#                   Manual Approval
+#                          ↓
+#                         Apply
+#
+# TFLint, tfsec, TruffleHog and Validate run independently
+# and can execute in parallel.
+#
+# Plan starts after all four stages complete successfully.
+#
+# Feature branches:
+# TFLint ────────┐
+# tfsec ─────────┤
+# TruffleHog ────┼──→ Plan
+# Validate ──────┘
+#
+# Main branch:
+# TFLint ────────┐
+# tfsec ─────────┤
+# TruffleHog ────┼──→ Plan → Manual Approval → Apply
+# Validate ──────┘
+#
+# Apply is restricted to the main branch.
+#
+# ====================================================================
+
+
+pool:
+  name: Haque_agents
+
+parameters:
+- name: RunTFLint
+  displayName: TFLint
+  type: boolean
+  default: false
+
+- name: RunTFSEC
+  displayName: TFSEC
+  type: boolean
+  default: false
+
+- name: RunTruffleHog
+  displayName: TruffleHog
+  type: boolean
+  default: false
+
+- name: RunValidate
+  displayName: Validate
+  type: boolean
+  default: false
+
+- name: RunPlan
+  displayName: Plan
+  type: boolean
+  default: false
+
+- name: RunApply
+  displayName: Apply
+  type: boolean
+  default: false
+
+
+
+trigger:
+  branches:
+    include:
+      - main
+      - feature101/*
+
+
+# ====================================================================
+#                     PIPELINE-LEVEL VARIABLES
+# ====================================================================
+
+variables:
+
+  WORKING_DIRECTORY: '$(System.DefaultWorkingDirectory)/environment/lab'
+
+  SERVICE_CONNECTION_NAME: 'Haque_svc1'
+
+  AZURE_SUBSCRIPTION_ID: 'c3ff59f6-17f7-44f5-a13e-c0f73b2779b5'
+
+  BACKEND_RESOURCE_GROUP_NAME: 'rg-infy'
+
+  BACKEND_STORAGE_ACCOUNT_NAME: 'infystorage99'
+
+  BACKEND_CONTAINER_NAME: 'tfstate'
+
+  BACKEND_TFSTATE_FILE_NAME: 'lab.tfstate'
+
+
+stages:
+
+
+######################################################################
+#                     1. TFLINT
+######################################################################
+
+- stage: TFLint
+  displayName: "TFLint"
+  condition: ${{ parameters.RunTFLint }}
+  dependsOn: []
+
+  jobs:
+
+  - job: TFLint_Scan
+    displayName: "TFLint Scan"
+
+    steps:
+
+
+    - script: |
+
+        echo "======================================"
+        echo "Checking Terraform and TFLint Versions"
+        echo "======================================"
+
+        terraform version
+
+        tflint --version
+
+      displayName: "Check Terraform and TFLint Versions"
+
+
+    - script: |
+
+        cd "$(WORKING_DIRECTORY)"
+
+        echo "======================================"
+        echo "Initializing TFLint"
+        echo "======================================"
+
+        tflint --init
+
+
+        echo "======================================"
+        echo "Running TFLint"
+        echo "======================================"
+
+        tflint
+
+      displayName: "Run TFLint"
+
+
+######################################################################
+#                     2. TFSEC
+######################################################################
+
+- stage: TFSEC
+  displayName: "tfsec Security Scan"
+  condition: ${{ parameters.RunTFSEC }}
+  dependsOn: []
+
+
+  jobs:
+
+  - job: TFSEC_Scan
+    displayName: "tfsec Scan"
+
+    steps:
+
+
+    - script: |
+
+        echo "======================================"
+        echo "Checking tfsec Version"
+        echo "======================================"
+
+        tfsec --version
+
+      displayName: "Check tfsec Version"
+
+
+
+    - script: |
+
+        cd "$(WORKING_DIRECTORY)"
+
+        echo "======================================"
+        echo "Running tfsec"
+        echo "======================================"
+
+        tfsec .
+
+      displayName: "Run tfsec"
+
+
+######################################################################
+#                     3. TRUFFLEHOG
+######################################################################
+
+- stage: TruffleHog
+  displayName: "TruffleHog Secret Scan"
+  condition: ${{ parameters.RunTruffleHog }}
+  dependsOn: []
+
+
+  jobs:
+
+  - job: TruffleHog_Scan
+    displayName: "TruffleHog Scan"
+
+    steps:
+
+
+    - script: |
+
+        echo "======================================"
+        echo "Checking TruffleHog Version"
+        echo "======================================"
+
+        trufflehog --version
+
+      displayName: "Check TruffleHog Version"
+
+
+
+    - script: |
+
+        echo "======================================"
+        echo "Running TruffleHog"
+        echo "======================================"
+
+        trufflehog filesystem "$(WORKING_DIRECTORY)" --results=verified,unknown
+
+      displayName: "Run TruffleHog"
+
+
+######################################################################
+#                     4. VALIDATE
+######################################################################
+
+- stage: Validate
+  displayName: "Terraform Validate"
+  condition: ${{ parameters.RunValidate }}
+  dependsOn: []
+
+
+  jobs:
+
+  - job: Terraform_Validate
+    displayName: "Terraform Validate"
+
+    steps:
+
+    # TERRAFORM INIT
+
+    - task: TerraformTask@5
+      displayName: "Terraform Init"
+
+      inputs:
+
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(WORKING_DIRECTORY)'
+
+        backendServiceArm: '$(SERVICE_CONNECTION_NAME)'
+        backendAzureRmOverrideSubscriptionID: '$(AZURE_SUBSCRIPTION_ID)'
+        backendAzureRmResourceGroupName: '$(BACKEND_RESOURCE_GROUP_NAME)'
+        backendAzureRmStorageAccountName: '$(BACKEND_STORAGE_ACCOUNT_NAME)'
+        backendAzureRmContainerName: '$(BACKEND_CONTAINER_NAME)'
+        backendAzureRmKey: '$(BACKEND_TFSTATE_FILE_NAME)'
+
+
+    # TERRAFORM VALIDATE
+
+    - task: TerraformTask@5
+      displayName: "Terraform Validate"
+
+      inputs:
+
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: '$(WORKING_DIRECTORY)'
+
+
+######################################################################
+#                     5. PLAN
+######################################################################
+
+- stage: Plan
+  displayName: "Terraform Plan"
+  condition: ${{ parameters.RunPlan }}
+
+  dependsOn: 
+  - TFLint
+  - TFSEC
+  - TruffleHog
+  - Validate
+
+
+  jobs:
+
+  - job: Terraform_Plan
+    displayName: "Terraform Plan"
+
+    steps:
+
+    # TERRAFORM INIT
+
+    - task: TerraformTask@5
+      displayName: "Terraform Init"
+
+      inputs:
+
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(WORKING_DIRECTORY)'
+
+        backendServiceArm: '$(SERVICE_CONNECTION_NAME)'
+        backendAzureRmOverrideSubscriptionID: '$(AZURE_SUBSCRIPTION_ID)'
+        backendAzureRmResourceGroupName: '$(BACKEND_RESOURCE_GROUP_NAME)'
+        backendAzureRmStorageAccountName: '$(BACKEND_STORAGE_ACCOUNT_NAME)'
+        backendAzureRmContainerName: '$(BACKEND_CONTAINER_NAME)'
+        backendAzureRmKey: '$(BACKEND_TFSTATE_FILE_NAME)'
+
+
+    # TERRAFORM PLAN
+
+    - task: TerraformTask@5
+      displayName: "Terraform Plan"
+
+      inputs:
+
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(WORKING_DIRECTORY)'
+
+        environmentServiceNameAzureRM: '$(SERVICE_CONNECTION_NAME)'
+        environmentAzureRmOverrideSubscriptionID: '$(AZURE_SUBSCRIPTION_ID)'
+
+
+######################################################################
+#                     6. MANUAL APPROVAL
+######################################################################
+
+- stage: ManualApproval
+  displayName: "Manual Approval"
+
+  dependsOn: Plan
+
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+
+  jobs:
+
+  - job: Approval
+
+    displayName: "Approve Terraform Apply"
+
+    pool: server
+
+    steps:
+
+    - task: ManualValidation@1
+
+      displayName: "Manual Approval Before Terraform Apply"
+
+      timeoutInMinutes: 60
+
+      inputs:
+
+        notifyUsers: |
+          hehetashamul@gmail.com
+
+        instructions: |
+
+          Terraform security scans, validation and plan
+          have completed successfully.
+
+          Please review:
+
+          1. TFLint results
+          2. tfsec results
+          3. TruffleHog results
+          4. Terraform Validate
+          5. Terraform Plan
+
+          Approve this step to continue with Terraform Apply.
+
+        onTimeout: 'reject'
+
+
+######################################################################
+#                     7. APPLY
+######################################################################
+
+- stage: Apply
+
+  displayName: "Terraform Apply"
+
+  dependsOn: ManualApproval
+
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+
+  jobs:
+
+  - job: Terraform_Apply
+
+    displayName: "Terraform Apply"
+
+    steps:
+
+    # TERRAFORM INIT
+
+    - task: TerraformTask@5
+
+      displayName: "Terraform Init"
+
+      inputs:
+
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(WORKING_DIRECTORY)'
+
+        backendServiceArm: '$(SERVICE_CONNECTION_NAME)'
+        backendAzureRmOverrideSubscriptionID: '$(AZURE_SUBSCRIPTION_ID)'
+        backendAzureRmResourceGroupName: '$(BACKEND_RESOURCE_GROUP_NAME)'
+        backendAzureRmStorageAccountName: '$(BACKEND_STORAGE_ACCOUNT_NAME)'
+        backendAzureRmContainerName: '$(BACKEND_CONTAINER_NAME)'
+        backendAzureRmKey: '$(BACKEND_TFSTATE_FILE_NAME)'
+
+
+    # TERRAFORM APPLY
+
+    - task: TerraformTask@5
+
+      displayName: "Terraform Apply"
+
+      inputs:
+
+        provider: 'azurerm'
+        command: 'apply'
+        workingDirectory: '$(WORKING_DIRECTORY)'
+
+        commandOptions: '-auto-approve'
+        environmentServiceNameAzureRM: '$(SERVICE_CONNECTION_NAME)'
+        environmentAzureRmOverrideSubscriptionID: '$(AZURE_SUBSCRIPTION_ID)'
